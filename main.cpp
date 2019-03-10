@@ -1,41 +1,16 @@
 /*place RVO.h under urho3d has error..*/
-#include <time.h>
+#include <random>
 #include <RVO.h>
-#if 0
-#include <Urho3D/Engine/Application.h>
-#include <Urho3D/Engine/Engine.h>
-#include <Urho3D/Engine/EngineDefs.h>
-#include <Urho3D/Input/InputEvents.h>
-#include <Urho3D/Resource/ResourceCache.h>
-#include <Urho3D/Scene/Scene.h>
-#endif
-#include <Urho3D/Engine/Application.h>
-#include <Urho3D/Core/CoreEvents.h>
-#include <Urho3D/Engine/Engine.h>
-#include <Urho3D/Engine/EngineDefs.h>
-#include <Urho3D/Graphics/AnimatedModel.h>
-#include <Urho3D/Graphics/AnimationController.h>
-#include <Urho3D/Graphics/Camera.h>
-#include <Urho3D/Engine/DebugHud.h>
-#include <Urho3D/Graphics/DebugRenderer.h>
-#include <Urho3D/Graphics/Graphics.h>
-#include <Urho3D/Graphics/Light.h>
-#include <Urho3D/Graphics/Material.h>
-#include <Urho3D/Graphics/Octree.h>
-#include <Urho3D/Graphics/Renderer.h>
-#include <Urho3D/Graphics/Zone.h>
-#include <Urho3D/Input/Input.h>
-#include <Urho3D/Navigation/Obstacle.h>
-#include <Urho3D/Navigation/OffMeshConnection.h>
-#include <Urho3D/Resource/ResourceCache.h>
-#include <Urho3D/Scene/Scene.h>
-#include <Urho3D/UI/Font.h>
-#include <Urho3D/UI/Text.h>
-#include <Urho3D/UI/UI.h>
-#include <Urho3D/DebugNew.h>
-#include <Urho3D/Container/Vector.h>
+#include <Urho3D/Urho3DAll.h>
 
-using namespace Urho3D;
+static unsigned int generate_random_seed()
+{
+	std::random_device rd;
+	std::default_random_engine gen = std::default_random_engine(rd());
+	std::uniform_int_distribution<unsigned int> dis(0, UINT_MAX);
+
+	return dis(gen);
+}
 
 class MyApp : public Application
 {
@@ -44,13 +19,7 @@ class MyApp : public Application
 public:
 	MyApp(Context* context) :
 		Application(context)
-	{
-		accTimeStep = 0.0f;
-		FPS = 0;
-		yaw_ = 0.0f;
-		pitch_ = 0.0f;
-		obstacle_num = 50;
-	}
+	{}
 	virtual void Setup();
 	virtual void Start();
 	virtual void Stop();
@@ -68,14 +37,15 @@ public:
 	SharedPtr<Scene> scene_;
 	SharedPtr<Node> cameraNode_;
 	/// Camera yaw angle.
-	float yaw_;
+	float yaw_{0.0f};
 	/// Camera pitch angle.
-	float pitch_;
+	float pitch_{0.0f};
 	MouseMode useMouseMode_;
 	//for FPS
-	float accTimeStep;
-	int FPS;
+	float accTimeStep{0.0f};
+	int FPS{0};
 	Text* instructionText;
+	bool showDebug{ true };
 
 	//RVO
 	Vector<RVO::Vector3> goals;
@@ -85,15 +55,14 @@ public:
 	void RVOsetPreferredVelocities(RVO::RVOSimulator *sim);
 	void RVOsetupVisualizeScene(RVO::RVOSimulator *sim);
 	void RVOupdateBoxPos(RVO::RVOSimulator *sim);
-	int obstacle_num;
+	int obstacle_num{ 50 };
 };
 
 void MyApp::Setup()
 {
 	// Called before engine initialization. engineParameters_ member variable can be modified here
 	engineParameters_[EP_FULL_SCREEN] = false;
-	engineParameters_[EP_SOUND] = false;
-	SetRandomSeed(time(NULL));
+	SetRandomSeed(generate_random_seed());
 }
 
 void MyApp::Start()
@@ -334,7 +303,7 @@ void MyApp::RVOsetupScenario(RVO::RVOSimulator *sim)
 	sim->setTimeStep(0.125f);
 
 	/* Specify the default parameters for agents that are subsequently added. */
-	sim->setAgentDefaults(15.0f, 10, 10.0f, 1.5f, 2.0f);
+	sim->setAgentDefaults(15.0f, 10, 5.0f, 10.0f, 1.5f, 2.0f);
 
 	/* Add agents, specifying their start position, and store their goals on the opposite side of the environment. */
 	for (float a = 0; a < M_PI; a += 0.1f) {
@@ -365,16 +334,15 @@ void MyApp::RVOsetupScenario(RVO::RVOSimulator *sim)
 	/*obstacle*/	
 	for (int ii = 0; ii < obstacle_num; ii++)
 	{
-		sim->addAgent(RVO::Vector3(Random(100.0f), Random(100.0f), Random(100.0f)));
-		sim->setAgentMaxSpeed(sim->getNumAgents() - 1, 0.001f);
-		goals.Push(sim->getAgentPosition(sim->getNumAgents() - 1));
+		sim->addObstacle(RVO::Vector3(Random(-100.0f, 100.0f), Random(-100.0f, 100.0f), Random(-100.0f, 100.0f)), Random(20.0f));
 	}
+	sim->processObstacles();
 }
 
 void MyApp::RVOsetPreferredVelocities(RVO::RVOSimulator *sim)
 {
 	/* Set the preferred velocity to be a vector of unit magnitude (speed) in the direction of the goal. */
-	for (size_t i = 0; i < sim->getNumAgents() - obstacle_num; ++i) {
+	for (size_t i = 0; i < sim->getNumAgents(); ++i) {
 		RVO::Vector3 goalVector = goals[i] - sim->getAgentPosition(i);
 
 //		if (RVO::absSq(goalVector) > 1.0f) {
@@ -383,27 +351,19 @@ void MyApp::RVOsetPreferredVelocities(RVO::RVOSimulator *sim)
 
 		sim->setAgentPrefVelocity(i, goalVector);
 	}
-
-	/*obstacle*/
-	for (size_t i = sim->getNumAgents() - obstacle_num; i < sim->getNumAgents(); i++)
-	{
-		sim->setAgentPrefVelocity(i, RVO::Vector3(0.0f, 0.0f, 0.0f));
-	}
 }
 
 void MyApp::RVOsetupVisualizeScene(RVO::RVOSimulator *sim)
 {
 	ResourceCache* cache = GetSubsystem<ResourceCache>();
-	cache->AddResourceDir(String("F:/genei_model/Urho3D/ball"));
 
-	for (unsigned i = 0; i < sim->getNumAgents() - obstacle_num; ++i)
+	for (unsigned i = 0; i < sim->getNumAgents(); ++i)
 	{
 		RVO::Vector3 RVOpos = sim->getAgentPosition(i);
 		Vector3 pos(RVOpos.x(), RVOpos.y(), RVOpos.z());
 
 		Node* boxNode = scene_->CreateChild("Box");
-		boxNode->SetPosition(pos);
-		boxNode->SetRotation(Quaternion(0.0f, 0.0f, 0.0f));
+		boxNode->SetTransform(pos, Quaternion::IDENTITY);
 		boxNode->SetScale(1.0f);
 		StaticModel* boxObject = boxNode->CreateComponent<StaticModel>();
 		boxObject->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
@@ -411,43 +371,29 @@ void MyApp::RVOsetupVisualizeScene(RVO::RVOSimulator *sim)
 		boxes.Push(boxNode);
 
 		/*find bounding sphere for RVO radius*/
-		Urho3D::Vector3 bbSize = boxObject->GetModel()->GetBoundingBox().Size();
-		float radius = 0.0f;
-		for (int ii = 0; ii < 3; ii++)
-		{
-			if (bbSize.Data()[ii] > radius)
-				radius = bbSize.Data()[ii];
-		}
-		radius /= 2.0f;
+		Urho3D::Vector3 hSize(boxObject->GetModel()->GetBoundingBox().HalfSize());
+		float radius = hSize.DotProduct(hSize);
 		sim->setAgentRadius(i, radius);
 	}
 
 	/*obstacle*/
-	for (unsigned i = sim->getNumAgents() - obstacle_num; i < sim->getNumAgents(); i++)
+	for (unsigned i = 0; i < sim->getNumObstacles(); i++)
 	{
-		RVO::Vector3 RVOpos = sim->getAgentPosition(i);
-		Vector3 pos(RVOpos.x(), RVOpos.y(), RVOpos.z());
-		float scale = Random(1.0f, 8.0f);
+		RVO::Vector3 RVOpos = sim->getObstaclePosition(i);
+		Urho3D::Vector3 pos(RVOpos.x(), RVOpos.y(), RVOpos.z());
+		float scale = sim->getObstacleRadius(i);
 
 		Node* ballNode = scene_->CreateChild("ball");
-		ballNode->SetPosition(pos);
-		ballNode->SetRotation(Quaternion(0.0f, 0.0f, 0.0f));
+		ballNode->SetTransform(pos, Quaternion::IDENTITY);
 		ballNode->SetScale(scale);
 		StaticModel* ballObject = ballNode->CreateComponent<StaticModel>();
-		ballObject->SetModel(cache->GetResource<Model>("ball.mdl"));
-		ballObject->ApplyMaterialList("ball.txt");
-
-		/*find bounding sphere for RVO radius*/
-		Urho3D::Vector3 bbSize = ballObject->GetModel()->GetBoundingBox().Size();
-		float radius = 0.0f;
-		for (int ii = 0; ii < 3; ii++)
-		{
-			if (bbSize.Data()[ii] > radius)
-				radius = bbSize.Data()[ii];
-		}
-		radius *= scale;
-		radius /= 2.0f;		
-		sim->setAgentRadius(i, radius + 2.0f);//add a bit more radius for obstacle
+		ballObject->SetModel(cache->GetResource<Model>("Models/Sphere.mdl"));
+		Material * m = new Material(context_);
+		m->SetNumTechniques(1);
+		m->SetTechnique(0, cache->GetResource<Technique>("Techniques/NoTexture.xml"));
+		m->SetShaderParameter("MatDiffColor", Vector4(Random(1.0f), Random(1.0f), Random(1.0f), 1.0f));
+		m->SetShaderParameter("MatSpecColor", Vector4(0.5f, 0.5f, 0.5f, 16.0f));
+		ballObject->SetMaterial(m);
 	}
 }
 
@@ -459,11 +405,6 @@ void MyApp::RVOupdateBoxPos(RVO::RVOSimulator *sim)
 		Vector3 pos(RVOpos.x(), RVOpos.y(), RVOpos.z());
 
 		boxes[i]->SetPosition(pos);
-	}
-
-	for (unsigned i = sim->getNumAgents() - obstacle_num; i < sim->getNumAgents(); i++)
-	{
-		sim->setAgentPosition(i, goals[i]);
 	}
 }
 
