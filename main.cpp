@@ -32,6 +32,7 @@ public:
 	void InitMouseMode(MouseMode mode);
 	void CreateInstructions();
 	void CreateConsoleAndDebugHud();
+	void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 	
 
 	SharedPtr<Scene> scene_;
@@ -45,12 +46,13 @@ public:
 	float accTimeStep{0.0f};
 	int FPS{0};
 	Text* instructionText;
-	bool showDebug{ true };
+	void UpdateStaticModelGroup();
 
 	//RVO
 	Vector<RVO::Vector3> goals;
 	RVO::RVOSimulator *sim;
-	Vector<Node*> boxes;
+	PODVector<StaticModelGroup*> groups;
+	PODVector<Node*> boxes;
 	void RVOsetupScenario(RVO::RVOSimulator *sim);
 	void RVOsetPreferredVelocities(RVO::RVOSimulator *sim);
 	void RVOsetupVisualizeScene(RVO::RVOSimulator *sim);
@@ -116,14 +118,8 @@ void MyApp::CreateScene()
 	// optimizing manner
 	scene_->CreateComponent<Octree>();
 
-	// Create a child scene node (at world origin) and a StaticModel component into it. Set the StaticModel to show a simple
-	// plane mesh with a "stone" material. Note that naming the scene nodes is optional. Scale the scene node larger
-	// (100 x 100 world units)
-	Node* planeNode = scene_->CreateChild("Plane");
-	planeNode->SetScale(Vector3(100.0f, 1.0f, 100.0f));
-	StaticModel* planeObject = planeNode->CreateComponent<StaticModel>();
-	planeObject->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
-	planeObject->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
+	scene_->CreateComponent<DebugRenderer>();
+	scene_->GetComponent<DebugRenderer>()->SetLineAntiAlias(true);
 
 	// Create a directional light to the world so that we can see something. The light scene node's orientation controls the
 	// light direction; we will use the SetDirection() function which calculates the orientation from a forward direction vector.
@@ -132,24 +128,6 @@ void MyApp::CreateScene()
 	lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f)); // The direction vector does not need to be normalized
 	Light* light = lightNode->CreateComponent<Light>();
 	light->SetLightType(LIGHT_DIRECTIONAL);
-
-	// Create more StaticModel objects to the scene, randomly positioned, rotated and scaled. For rotation, we construct a
-	// quaternion from Euler angles where the Y angle (rotation about the Y axis) is randomized. The mushroom model contains
-	// LOD levels, so the StaticModel component will automatically select the LOD level according to the view distance (you'll
-	// see the model get simpler as it moves further away). Finally, rendering a large number of the same object with the
-	// same material allows instancing to be used, if the GPU supports it. This reduces the amount of CPU work in rendering the
-	// scene.
-	const unsigned NUM_OBJECTS = 200;
-	for (unsigned i = 0; i < NUM_OBJECTS; ++i)
-	{
-		Node* mushroomNode = scene_->CreateChild("Mushroom");
-		mushroomNode->SetPosition(Vector3(Random(90.0f) - 45.0f, 0.0f, Random(90.0f) - 45.0f));
-		mushroomNode->SetRotation(Quaternion(0.0f, Random(360.0f), 0.0f));
-		mushroomNode->SetScale(0.5f + Random(2.0f));
-		StaticModel* mushroomObject = mushroomNode->CreateComponent<StaticModel>();
-		mushroomObject->SetModel(cache->GetResource<Model>("Models/Mushroom.mdl"));
-		mushroomObject->SetMaterial(cache->GetResource<Material>("Materials/Mushroom.xml"));
-	}
 
 	// Create a scene node for the camera, which we will move around
 	// The camera will use default settings (1000 far clip distance, 45 degrees FOV, set aspect ratio automatically)
@@ -175,6 +153,9 @@ void MyApp::SubscribeToEvents()
 {
 	// Subscribe HandleUpdate() function for processing update events
 	SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(MyApp, HandleUpdate));
+
+	// Subscribe HandlePostRenderUpdate() function for processing the post-render update event, during which we request debug geometry
+	SubscribeToEvent(E_POSTRENDERUPDATE, URHO3D_HANDLER(MyApp, HandlePostRenderUpdate));
 }
 
 void MyApp::HandleUpdate(StringHash eventType, VariantMap& eventData)
@@ -192,6 +173,7 @@ void MyApp::HandleUpdate(StringHash eventType, VariantMap& eventData)
 	sim->setTimeStep(timeStep);
 	sim->doStep();
 	RVOupdateBoxPos(sim);
+	UpdateStaticModelGroup();
 
 	//FPS
 	accTimeStep += timeStep;
@@ -303,7 +285,7 @@ void MyApp::RVOsetupScenario(RVO::RVOSimulator *sim)
 	sim->setTimeStep(0.125f);
 
 	/* Specify the default parameters for agents that are subsequently added. */
-	sim->setAgentDefaults(15.0f, 10, 5.0f, 10.0f, 1.5f, 2.0f);
+	sim->setAgentDefaults(50.0f, 10, 10.0f, 5.0f, 1.5f, 2.0f);
 
 	/* Add agents, specifying their start position, and store their goals on the opposite side of the environment. */
 	for (float a = 0; a < M_PI; a += 0.1f) {
@@ -334,7 +316,7 @@ void MyApp::RVOsetupScenario(RVO::RVOSimulator *sim)
 	/*obstacle*/	
 	for (int ii = 0; ii < obstacle_num; ii++)
 	{
-		sim->addObstacle(RVO::Vector3(Random(-100.0f, 100.0f), Random(-100.0f, 100.0f), Random(-100.0f, 100.0f)), Random(20.0f));
+		sim->addObstacle(RVO::Vector3(Random(-200.0f, 200.0f), Random(-200.0f, 200.0f), Random(-200.0f, 120.0f)), Random(10.0f, 30.0f));
 	}
 	sim->processObstacles();
 }
@@ -357,6 +339,15 @@ void MyApp::RVOsetupVisualizeScene(RVO::RVOSimulator *sim)
 {
 	ResourceCache* cache = GetSubsystem<ResourceCache>();
 
+	const unsigned grpNum = 512;
+	Node * grp = scene_->CreateChild("group");
+	StaticModelGroup * smg = grp->CreateComponent<StaticModelGroup>();
+	smg->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+	smg->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
+	groups.Push(smg);
+	Urho3D::Vector3 hSize(cache->GetResource<Model>("Models/Box.mdl")->GetBoundingBox().HalfSize());
+	float radius = hSize.Length();
+
 	for (unsigned i = 0; i < sim->getNumAgents(); ++i)
 	{
 		RVO::Vector3 RVOpos = sim->getAgentPosition(i);
@@ -365,15 +356,19 @@ void MyApp::RVOsetupVisualizeScene(RVO::RVOSimulator *sim)
 		Node* boxNode = scene_->CreateChild("Box");
 		boxNode->SetTransform(pos, Quaternion::IDENTITY);
 		boxNode->SetScale(1.0f);
-		StaticModel* boxObject = boxNode->CreateComponent<StaticModel>();
-		boxObject->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-		boxObject->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
+		smg->AddInstanceNode(boxNode);
 		boxes.Push(boxNode);
-
-		/*find bounding sphere for RVO radius*/
-		Urho3D::Vector3 hSize(boxObject->GetModel()->GetBoundingBox().HalfSize());
-		float radius = hSize.DotProduct(hSize);
+		
 		sim->setAgentRadius(i, radius);
+
+		if (smg->GetNumInstanceNodes() >= grpNum)
+		{
+			grp = scene_->CreateChild("group");
+			smg = grp->CreateComponent<StaticModelGroup>();
+			smg->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+			smg->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
+			groups.Push(smg);
+		}
 	}
 
 	/*obstacle*/
@@ -399,13 +394,71 @@ void MyApp::RVOsetupVisualizeScene(RVO::RVOSimulator *sim)
 
 void MyApp::RVOupdateBoxPos(RVO::RVOSimulator *sim)
 {
-	for (unsigned i = 0; i < sim->getNumAgents() - obstacle_num; ++i)
+	for (unsigned i = 0; i < sim->getNumAgents(); ++i)
 	{
 		RVO::Vector3 RVOpos = sim->getAgentPosition(i);
 		Vector3 pos(RVOpos.x(), RVOpos.y(), RVOpos.z());
 
 		boxes[i]->SetPosition(pos);
 	}
+}
+
+void MyApp::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
+{
+	DebugRenderer* debug = scene_->GetComponent<DebugRenderer>();
+
+	for (unsigned i = 0; i < sim->getNumObstacles(); ++i)
+	{
+		RVO::Vector3 RVOpos = sim->getObstaclePosition(i);
+		Vector3 pos(RVOpos.x(), RVOpos.y(), RVOpos.z());
+		float r = sim->getObstacleRadius(i);
+
+		debug->AddSphere(Sphere(pos, r), Color::RED);
+	}
+}
+
+static void updateStaticModelGroupWork(const WorkItem* item, unsigned threadIndex)
+{
+	StaticModelGroup ** start = reinterpret_cast<StaticModelGroup **>(item->start_);
+	StaticModelGroup ** end = reinterpret_cast<StaticModelGroup **>(item->end_);
+
+	while (1)
+	{
+		StaticModelGroup * s = *start;
+		s->GetWorldBoundingBox();
+		if (start == end)
+			break;
+		start++;
+	}
+}
+
+void MyApp::UpdateStaticModelGroup()
+{
+	URHO3D_PROFILE(UpdateStaticModelGroup);
+	WorkQueue* queue = GetSubsystem<WorkQueue>();
+	int numWorkItems = queue->GetNumThreads() + 1;
+	int unitsPerItem = Max(groups.Size() / numWorkItems, 1);
+
+	PODVector<StaticModelGroup*>::Iterator start = groups.Begin();
+	for (int i = 0; i < numWorkItems && groups.End() - start > 0; ++i)
+	{
+		PODVector<StaticModelGroup*>::Iterator end;
+		if (i == numWorkItems - 1)
+			end = groups.End() - 1;
+		else
+			end = start + unitsPerItem - 1;
+
+		SharedPtr<WorkItem> item = queue->GetFreeItem();
+		item->priority_ = M_MAX_UNSIGNED;
+		item->workFunction_ = updateStaticModelGroupWork;
+		item->aux_ = NULL;
+		item->start_ = &(*start);
+		item->end_ = &(*end);
+		queue->AddWorkItem(item);
+
+		start += unitsPerItem;
+	}
+	queue->Complete(M_MAX_UNSIGNED);
 }
 
 URHO3D_DEFINE_APPLICATION_MAIN(MyApp)
